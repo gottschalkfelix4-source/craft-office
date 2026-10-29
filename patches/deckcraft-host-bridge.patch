@@ -1,0 +1,347 @@
+diff --git a/apps/deckcraft-web/Cargo.toml b/apps/deckcraft-web/Cargo.toml
+index 7014421..e462fb8 100644
+--- a/apps/deckcraft-web/Cargo.toml
++++ b/apps/deckcraft-web/Cargo.toml
+@@ -27,4 +27,4 @@ rfd = { workspace = true }
+ wasm-bindgen = "0.2"
+ wasm-bindgen-futures = "0.4"
+ js-sys = "0.3"
+-web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlElement", "HtmlCanvasElement", "HtmlAnchorElement", "Blob", "BlobPropertyBag", "Url", "Location", "CssStyleDeclaration"] }
++web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlElement", "HtmlCanvasElement", "HtmlAnchorElement", "Blob", "BlobPropertyBag", "Url", "Location", "CssStyleDeclaration", "MessageEvent", "UrlSearchParams"] }
+diff --git a/apps/deckcraft-web/src/host.rs b/apps/deckcraft-web/src/host.rs
+new file mode 100644
+index 0000000..6333589
+--- /dev/null
++++ b/apps/deckcraft-web/src/host.rs
+@@ -0,0 +1,147 @@
++//! The `postMessage` bridge to a same-origin parent page (`?host=parent`), for pages that embed
++//! DeckCraft in an `<iframe>` and keep its files. The same messages as WordCraft's and GridCraft's
++//! bridges; each is a plain object with a `type`:
++//!
++//! - `deckcraft:ready` (to the parent): `{ version }`, sent once the app is running and
++//!   listening; send a file now.
++//! - `deckcraft:open` (from the parent): `{ name, bytes }`, bytes an `ArrayBuffer` or
++//!   `Uint8Array`. It opens like a presentation dropped on the window.
++//! - `deckcraft:save` (to the parent): `{ name, saveAs, bytes }` (a transferred `ArrayBuffer`).
++//!   File › Save sends the presentation as .pptx named after the document with `saveAs: false`;
++//!   everything else that would download (Save As, Export, Print) is sent the same way as a copy.
++//! - `deckcraft:dirty` (to the parent): `{ dirty }` whenever unsaved changes appear or go away.
++//! - `deckcraft:failed` (to the parent): `{ error }` when the app couldn't start.
++//!
++//! Only the parent window on the page's own origin is heard or answered. In host mode the page
++//! starts without a presentation (`?blank` starts an empty one), and the parent guards leaving it.
++
++use std::cell::RefCell;
++use std::rc::Rc;
++
++use deckcraft_ui_egui::Services;
++use wasm_bindgen::JsCast as _;
++use wasm_bindgen::JsValue;
++use wasm_bindgen::closure::Closure;
++
++/// Files the parent sent, waiting for the next frame to open them.
++pub type Opened = Rc<RefCell<Vec<(String, Vec<u8>)>>>;
++
++#[derive(Clone)]
++pub struct Bridge {
++    window: web_sys::Window,
++    parent: web_sys::Window,
++    origin: String,
++}
++
++impl Bridge {
++    /// `None` when the page isn't framed, or when the parent is on another origin (messages only
++    /// go to this origin, so every save would be dropped without an error).
++    pub fn new() -> Option<Self> {
++        let window = web_sys::window()?;
++        let parent = window.parent().ok().flatten()?;
++        if js_sys::Object::is(&parent, &window) {
++            return None;
++        }
++        let origin = window.location().origin().ok()?;
++        if origin == "null" {
++            return None;
++        }
++        if parent.location().origin().ok()? != origin {
++            return None;
++        }
++        Some(Self { window, parent, origin })
++    }
++
++    /// Hand saved and exported files to the parent instead of downloading them, and hear the
++    /// files it sends (queued in `opened`).
++    pub fn connect(&self, services: &mut Services, opened: Opened, ctx: egui::Context) {
++        self.listen(opened, ctx);
++        let bridge = self.clone();
++        services.host_save = Some(Box::new(move |name: &str, bytes: &[u8]| bridge.post_save(name, bytes, false)));
++        let bridge = self.clone();
++        services.download = Some(Box::new(move |name: &str, bytes: &[u8]| {
++            if let Err(e) = bridge.post_save(name, bytes, false) {
++                log::error!("couldn't hand {name} to the host: {e}");
++            }
++        }));
++    }
++
++    pub fn post_ready(&self) {
++        self.send(&[("type", "deckcraft:ready".into()), ("version", env!("CARGO_PKG_VERSION").into())]);
++    }
++
++    pub fn post_failed(&self, error: &str) {
++        self.send(&[("type", "deckcraft:failed".into()), ("error", error.into())]);
++    }
++
++    pub fn post_dirty(&self, dirty: bool) -> bool {
++        self.send(&[("type", "deckcraft:dirty".into()), ("dirty", dirty.into())])
++    }
++
++    fn post_save(&self, path: &str, bytes: &[u8], save_as: bool) -> Result<(), String> {
++        let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.to_string());
++        let buffer = js_sys::Uint8Array::from(bytes).buffer();
++        let message = message(&[
++            ("type", "deckcraft:save".into()),
++            ("name", name.as_str().into()),
++            ("saveAs", save_as.into()),
++            ("bytes", buffer.clone().into()),
++        ])
++        .ok_or_else(|| "couldn't build the message".to_string())?;
++        self.parent
++            .post_message_with_transfer(&message, &self.origin, &js_sys::Array::of1(&buffer))
++            .map_err(|e| e.as_string().unwrap_or_else(|| format!("{e:?}")))
++    }
++
++    /// Hear `deckcraft:open` from the parent and queue the file for the next frame.
++    fn listen(&self, opened: Opened, ctx: egui::Context) {
++        let parent = self.parent.clone();
++        let origin = self.origin.clone();
++        let on_message = Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |event: web_sys::MessageEvent| {
++            if event.origin() != origin || !event.source().is_some_and(|s| js_sys::Object::is(&s, &parent)) {
++                return;
++            }
++            let data = event.data();
++            if string(&data, "type").as_deref() != Some("deckcraft:open") {
++                return;
++            }
++            let name = string(&data, "name").filter(|n| !n.trim().is_empty()).unwrap_or_else(|| "Presentation.pptx".to_string());
++            let Some(bytes) = bytes(&data) else { return };
++            opened.borrow_mut().push((name, bytes));
++            ctx.request_repaint();
++        });
++        if self.window.add_event_listener_with_callback("message", on_message.as_ref().unchecked_ref()).is_ok() {
++            // The listener lives as long as the page.
++            on_message.forget();
++        }
++    }
++
++    /// Post a message to the parent; false if it couldn't be sent.
++    fn send(&self, fields: &[(&str, JsValue)]) -> bool {
++        message(fields).is_some_and(|m| self.parent.post_message(&m, &self.origin).is_ok())
++    }
++}
++
++fn message(fields: &[(&str, JsValue)]) -> Option<js_sys::Object> {
++    let m = js_sys::Object::new();
++    for (key, value) in fields {
++        js_sys::Reflect::set(&m, &JsValue::from_str(key), value).ok()?;
++    }
++    Some(m)
++}
++
++fn string(data: &JsValue, key: &str) -> Option<String> {
++    js_sys::Reflect::get(data, &JsValue::from_str(key)).ok()?.as_string()
++}
++
++/// `bytes` as an `ArrayBuffer` or `Uint8Array`.
++fn bytes(data: &JsValue) -> Option<Vec<u8>> {
++    let bytes = js_sys::Reflect::get(data, &JsValue::from_str("bytes")).ok()?;
++    if let Some(array) = bytes.dyn_ref::<js_sys::Uint8Array>() {
++        Some(array.to_vec())
++    } else if bytes.is_instance_of::<js_sys::ArrayBuffer>() {
++        Some(js_sys::Uint8Array::new(&bytes).to_vec())
++    } else {
++        None
++    }
++}
+diff --git a/apps/deckcraft-web/src/main.rs b/apps/deckcraft-web/src/main.rs
+index 6d2b7e9..b144ec2 100644
+--- a/apps/deckcraft-web/src/main.rs
++++ b/apps/deckcraft-web/src/main.rs
+@@ -13,11 +13,16 @@
+ //! - dropped files are read asynchronously by `web::WebShell` and delivered through the inbox;
+ //! - preferences are not persisted.
+ //!
++//! `?host=parent` (inside an `<iframe>`) talks to a same-origin parent page instead: it sends the
++//! presentation to open and stores what DeckCraft saves (`host`).
++//!
+ //! URL query flags: `?webgl` forces the WebGL2 backend instead of WebGPU; `?blank` starts with an
+ //! empty presentation instead of the sample deck; `?show` starts the slide show.
+ #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
+ #![forbid(unsafe_code)]
+ 
++#[cfg(target_arch = "wasm32")]
++mod host;
+ #[cfg(target_arch = "wasm32")]
+ mod web;
+ 
+diff --git a/apps/deckcraft-web/src/web.rs b/apps/deckcraft-web/src/web.rs
+index f8e68a3..7580cf8 100644
+--- a/apps/deckcraft-web/src/web.rs
++++ b/apps/deckcraft-web/src/web.rs
+@@ -30,6 +30,10 @@ pub fn start() {
+         {
+             create.instance_descriptor.backends = eframe::wgpu::Backends::GL;
+         }
++        // `?host=parent`: a same-origin page framing DeckCraft opens presentations in it and
++        // stores what it saves (`host`).
++        let bridge = if query_param("host").as_deref() == Some("parent") { crate::host::Bridge::new() } else { None };
++        let app_bridge = bridge.clone();
+         let result = eframe::WebRunner::new()
+             .start(
+                 canvas,
+@@ -40,26 +44,44 @@ pub fn start() {
+                     }
+                     deckcraft_ui_egui::install_ime_pass_hooks(&cc.egui_ctx);
+                     let inbox: Inbox = Inbox::default();
+-                    let mut app = SlideApp::new(Session::new(), services(inbox.clone(), cc.egui_ctx.clone()));
++                    let mut services = services(inbox.clone(), cc.egui_ctx.clone());
++                    let opened = crate::host::Opened::default();
++                    if let Some(bridge) = &app_bridge {
++                        bridge.connect(&mut services, opened.clone(), cc.egui_ctx.clone());
++                    }
++                    let mut app = SlideApp::new(Session::new(), services);
+                     let q = query();
+-                    if !q.contains("blank") {
+-                        if let Err(e) = deckcraft_engine::sample::open_sample(&mut app.session) {
+-                            log::error!("sample deck: {e}");
++                    // In host mode the parent sends the presentation to edit; no sample meanwhile.
++                    if q.contains("blank") {
++                        if let Err(e) = app.run("file.new", serde_json::json!({})) {
++                            log::error!("new presentation: {e}");
+                         }
+-                    } else if let Err(e) = app.run("file.new", serde_json::json!({})) {
+-                        log::error!("new presentation: {e}");
++                    } else if app_bridge.is_none()
++                        && let Err(e) = deckcraft_engine::sample::open_sample(&mut app.session)
++                    {
++                        log::error!("sample deck: {e}");
+                     }
+                     if q.contains("show") {
+                         app.start_show(0, false);
+                     }
+-                    Ok(Box::new(WebShell { app, inbox }))
++                    Ok(Box::new(WebShell { app, inbox, bridge: app_bridge, opened, reported_dirty: None }))
+                 }),
+             )
+             .await;
+         if let Some(el) = document.get_element_by_id(LOADING_ID) {
+             match result {
+-                Ok(()) => el.remove(),
+-                Err(e) => el.set_inner_html(&format!("<p>DeckCraft failed to start: {e:?}</p><p>A browser with WebGPU or WebGL2 is required.</p>")),
++                Ok(()) => {
++                    el.remove();
++                    if let Some(bridge) = &bridge {
++                        bridge.post_ready();
++                    }
++                }
++                Err(e) => {
++                    if let Some(bridge) = &bridge {
++                        bridge.post_failed(&format!("{e:?}"));
++                    }
++                    el.set_inner_html(&format!("<p>DeckCraft failed to start: {e:?}</p><p>A browser with WebGPU or WebGL2 is required.</p>"));
++                }
+             }
+         }
+     });
+@@ -69,17 +91,37 @@ fn query() -> String {
+     web_sys::window().and_then(|w| w.location().search().ok()).unwrap_or_default()
+ }
+ 
++fn query_param(key: &str) -> Option<String> {
++    web_sys::UrlSearchParams::new_with_str(&query()).ok()?.get(key)
++}
++
+ /// Wraps the app to read dropped files asynchronously (browsers can't read them synchronously)
+ /// and feed them through the inbox.
+ struct WebShell {
+     app: SlideApp,
+     inbox: Inbox,
++    /// The framing page (`?host=parent`), if any.
++    bridge: Option<crate::host::Bridge>,
++    /// Presentations the framing page sent, opened on the next pass.
++    opened: crate::host::Opened,
++    /// The unsaved-changes state last reported to the framing page.
++    reported_dirty: Option<bool>,
+ }
+ 
+ impl eframe::App for WebShell {
+     /// Delegate one eframe logic pass to the wrapped application.
+     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
++        for (name, bytes) in std::mem::take(&mut *self.opened.borrow_mut()) {
++            let id = self.app.begin_external_file("drop");
++            push_inbox(&self.inbox, InboxEvent::File(InboxFile { id, name, bytes }));
++        }
+         self.app.logic(ctx);
++        if let Some(bridge) = &self.bridge {
++            let dirty = self.app.session.documents().iter().any(|d| d.is_dirty());
++            if self.reported_dirty != Some(dirty) && bridge.post_dirty(dirty) {
++                self.reported_dirty = Some(dirty);
++            }
++        }
+     }
+ 
+     /// Consume browser drops with fresh input, capture the identity before the asynchronous read,
+diff --git a/crates/ui-egui/src/app/files.rs b/crates/ui-egui/src/app/files.rs
+index 0f3c944..4da6a6f 100644
+--- a/crates/ui-egui/src/app/files.rs
++++ b/crates/ui-egui/src/app/files.rs
+@@ -418,7 +418,9 @@ impl SlideApp {
+     }
+ 
+     pub fn save(&mut self) {
+-        if self.session.active().and_then(|d| d.path.clone()).is_some() {
++        if self.services.host_save.is_some() {
++            self.save_to_host();
++        } else if self.session.active().and_then(|d| d.path.clone()).is_some() {
+             match self.session.execute("file.save", &json!({})) {
+                 Ok(_) => self.set_status("Saved"),
+                 Err(e) => self.set_status(e.to_string()),
+@@ -428,6 +430,26 @@ impl SlideApp {
+         }
+     }
+ 
++    /// Save for a framing page (`Services::host_save`): the presentation goes to it as .pptx named
++    /// after the document, and counts as saved once the page has it.
++    fn save_to_host(&mut self) {
++        let Some((name, doc)) = self.session.active().map(|d| (format!("{}.pptx", d.title()), d.doc.clone())) else { return };
++        let result = deckcraft_engine::cmd::file::save_bytes(&doc, "pptx")
++            .map_err(|e| e.to_string())
++            .and_then(|bytes| self.services.host_save.as_mut().map_or(Err("no host".to_string()), |save| save(&name, &bytes)));
++        match result {
++            Ok(()) => {
++                if let Some(st) = self.session.active_mut()
++                    && std::sync::Arc::ptr_eq(&st.doc, &doc)
++                {
++                    st.saved_doc = doc;
++                }
++                self.set_status("Saved");
++            }
++            Err(e) => self.set_status(e),
++        }
++    }
++
+     /// Act on requests commands left for the UI.
+     pub(super) fn drain_requests(&mut self) {
+         for r in std::mem::take(&mut self.session.ui_requests) {
+diff --git a/crates/ui-egui/src/services.rs b/crates/ui-egui/src/services.rs
+index 88f03ac..b17dc40 100644
+--- a/crates/ui-egui/src/services.rs
++++ b/crates/ui-egui/src/services.rs
+@@ -47,6 +47,9 @@ pub struct Services {
+     pub open_async: Option<OpenAsyncFn>,
+     /// Hand bytes to the user as a named file (browser download).
+     pub download: Option<DownloadFn>,
++    /// A page that frames the web app and keeps its files (`?host=parent`): File › Save hands it
++    /// the presentation as .pptx under the document's name instead of downloading it.
++    pub host_save: Option<WriteFn>,
+     pub inbox: Option<Inbox>,
+     /// Image on the system clipboard (PNG bytes), when the host can read one.
+     pub clipboard_image: Option<Box<dyn FnMut() -> Option<Vec<u8>>>>,

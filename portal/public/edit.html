@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <title>Craft Office</title>
+  <link rel="icon" id="favicon" href="icons/word.png">
+  <link rel="stylesheet" href="portal.css">
+</head>
+<body class="editor">
+  <header class="editbar">
+    <a class="btn ghost" href="./" title="Zurück zu Meine Dateien">&larr; Dateien</a>
+    <img id="app-icon" src="icons/word.png" alt="">
+    <span class="title" id="title"></span>
+    <span class="status" id="status" role="status"></span>
+    <span class="spacer"></span>
+    <a class="btn ghost" id="download" hidden>Herunterladen</a>
+  </header>
+  <div class="frame">
+    <iframe id="frame" title="Editor" allow="clipboard-read; clipboard-write; fullscreen"></iframe>
+    <div class="overlay" id="overlay" hidden></div>
+  </div>
+  <div class="toast" id="toast" hidden></div>
+  <script src="portal.js"></script>
+  <script src="edit.js"></script>
+</body>
+</html>

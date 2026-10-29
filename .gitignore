@@ -1,0 +1,5 @@
+upstream/
+data/
+portal/data/
+portal/apps/
+node_modules/

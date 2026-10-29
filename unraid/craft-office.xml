@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>craft-office</Name>
+  <Repository>ghcr.io/gottschalkfelix4-source/craft-office:latest</Repository>
+  <Registry>https://github.com/gottschalkfelix4-source/craft-office/pkgs/container/craft-office</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/gottschalkfelix4-source/craft-office/issues</Support>
+  <Project>https://github.com/gottschalkfelix4-source/craft-office</Project>
+  <Overview>Web-Office im Stil von Office 365: WordCraft (Textverarbeitung), GridCraft (Tabellenkalkulation) und DeckCraft (Präsentationen) aus den ArtCraft Crafting Apps laufen nativ im Browser (Rust/WebAssembly, WebGPU oder WebGL2), ohne VNC. Mit Anmeldung, eigenem Dateibereich pro Benutzer, Hochladen und Speichern direkt auf dem Server (.docx, .xlsx, .pptx).&#xD;
+&#xD;
+Beim ersten Start wird der Benutzer aus ADMIN_USER / ADMIN_PASSWORD angelegt. Weitere Benutzer: docker exec -it craft-office node /opt/portal/server.js adduser NAME</Overview>
+  <Category>Productivity: Tools:</Category>
+  <WebUI>http://[IP]:[PORT:8080]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/gottschalkfelix4-source/craft-office/main/unraid/craft-office.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/gottschalkfelix4-source/craft-office/main/unraid/craft-office.png</Icon>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+  <Config Name="WebUI-Port" Target="8080" Default="8095" Mode="tcp" Description="Port des Portals" Type="Port" Display="always" Required="true" Mask="false">8095</Config>
+  <Config Name="Daten" Target="/data" Default="/mnt/user/appdata/craft-office" Mode="rw" Description="Benutzer, Sitzungsschlüssel und alle Dokumente (files/BENUTZER/)" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/craft-office</Config>
+  <Config Name="Admin-Benutzer" Target="ADMIN_USER" Default="admin" Mode="" Description="Erster Benutzer, wird nur angelegt, solange noch keiner existiert" Type="Variable" Display="always" Required="true" Mask="false">admin</Config>
+  <Config Name="Admin-Passwort" Target="ADMIN_PASSWORD" Default="" Mode="" Description="Passwort des ersten Benutzers (mindestens 8 Zeichen). Wird nach dem ersten Start nicht mehr gelesen." Type="Variable" Display="always" Required="true" Mask="true"></Config>
+  <Config Name="Sitzungsdauer (Tage)" Target="SESSION_DAYS" Default="14" Mode="" Description="Wie lange eine Anmeldung gültig bleibt" Type="Variable" Display="advanced" Required="false" Mask="false">14</Config>
+  <Config Name="Max. Dateigröße (MB)" Target="MAX_UPLOAD_MB" Default="500" Mode="" Description="Größte Datei, die hochgeladen oder gespeichert werden kann" Type="Variable" Display="advanced" Required="false" Mask="false">500</Config>
+  <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="Benutzer-ID für Server und Dateien (Unraid: 99 = nobody)" Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
+  <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Gruppen-ID für Server und Dateien (Unraid: 100 = users)" Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
+</Container>

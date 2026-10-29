@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Craft Office</title>
+  <link rel="icon" href="icons/word.png">
+  <link rel="stylesheet" href="portal.css">
+</head>
+<body>
+  <section class="login" id="login" hidden>
+    <form id="login-form">
+      <h1>Craft Office</h1>
+      <label>Benutzername <input type="text" name="user" autocomplete="username" required autofocus></label>
+      <label>Passwort <input type="password" name="password" autocomplete="current-password" required></label>
+      <p class="error" id="login-error"></p>
+      <button class="btn primary" type="submit">Anmelden</button>
+    </form>
+  </section>
+
+  <div id="app" hidden>
+    <header class="topbar">
+      <a class="brand" href="./"><span class="dots"><i></i><i></i><i></i></span>Craft Office</a>
+      <span class="spacer"></span>
+      <span id="user-name"></span>
+      <span class="avatar" id="avatar"></span>
+      <button class="btn ghost" id="logout">Abmelden</button>
+    </header>
+    <main class="home">
+      <h2>Neu erstellen</h2>
+      <div class="tiles">
+        <button class="tile" data-new="word"><img src="icons/word.png" alt=""><div><b>Dokument</b><span>WordCraft · .docx</span></div></button>
+        <button class="tile" data-new="grid"><img src="icons/grid.png" alt=""><div><b>Tabelle</b><span>GridCraft · .xlsx</span></div></button>
+        <button class="tile" data-new="deck"><img src="icons/deck.png" alt=""><div><b>Präsentation</b><span>DeckCraft · .pptx</span></div></button>
+      </div>
+
+      <h2>Meine Dateien</h2>
+      <div class="toolbar">
+        <div class="filters" role="group" aria-label="Filter">
+          <button class="btn" data-filter="all" aria-pressed="true">Alle</button>
+          <button class="btn" data-filter="word" aria-pressed="false">Dokumente</button>
+          <button class="btn" data-filter="grid" aria-pressed="false">Tabellen</button>
+          <button class="btn" data-filter="deck" aria-pressed="false">Präsentationen</button>
+        </div>
+        <span class="spacer"></span>
+        <input type="search" id="search" placeholder="Suchen" aria-label="Dateien durchsuchen">
+        <button class="btn" id="upload">Hochladen</button>
+        <input type="file" id="upload-input" multiple hidden>
+      </div>
+      <div class="files" id="files"></div>
+    </main>
+  </div>
+
+  <div class="drop" id="drop" hidden>Dateien hier ablegen zum Hochladen</div>
+  <div class="toast" id="toast" hidden></div>
+  <script src="portal.js"></script>
+  <script src="home.js"></script>
+</body>
+</html>

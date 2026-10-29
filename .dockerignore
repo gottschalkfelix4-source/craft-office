@@ -1,0 +1,5 @@
+upstream
+portal/data
+portal/apps
+**/node_modules
+.git
